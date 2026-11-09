@@ -1,12 +1,18 @@
 import {$, $$, Point, Rect} from './util.js';
 
-// Acceleration due to gravity
-const G = 0.5;
+// Debug
+let actorId = 0;
+let begin = false;
 
+// Acceleration due to gravity
+const G = 1.5;
+
+// For terrain snapping to grid
 function locStr(p) {
 	return p.x + ',' + p.y;
 }
 
+// Slightly inefficient collision detection (don't remember corners)
 function overlaps(item1, item2) {
 	const c1 = item1.corners;
 	const c2 = item2.corners;
@@ -19,6 +25,49 @@ function overlaps(item1, item2) {
 		}
 	}
 	return false;
+}
+
+// Check whether we need to turn off vx or vy, by setting
+// One of them to zero
+// Eliminates wall-hanging problem
+function obstacleInPath(actor, obstacle, origTopLeft, vx, vy) {
+	const sav = actor.rect.topLeft.clone();
+	actor.rect.topLeft = origTopLeft.clone();
+	actor.rect.topLeft.x += vx;
+	actor.rect.topLeft.y += vy;
+	const collides = overlaps(actor, obstacle);
+	actor.rect.topLeft = sav;
+	return collides;
+}
+
+// If we move and detect a collision, move us back to just touching
+function walkBack(actor, obstacle, origTopLeft) {
+	// We have already moved back enough from another collider
+	if (!overlaps(actor, obstacle)) {
+		return;
+	}
+	// Check which velocities to turn off
+	if (obstacleInPath(actor, obstacle, origTopLeft, actor.vx, 0)) {
+		actor.vx = 0;
+	}
+	if (obstacleInPath(actor, obstacle, origTopLeft, 0, actor.vy)) {
+		actor.vy = 0;
+	}
+	const d = actor.rect.topLeft.sub(origTopLeft);
+	const a = d.mag();
+	// We're packed closely
+	if (a < 0.01) {
+		return;
+	}
+	const dd = d.scale(-0.5/a);
+	let diff;
+	do {
+		actor.rect.topLeft = actor.rect.topLeft.add(dd);
+		diff = actor.rect.topLeft.sub(origTopLeft);
+	} while (overlaps(actor, obstacle));
+	if (diff.dot(dd) > 0) {
+		actor.rect.topLeft = origTopLeft;
+	}
 }
 
 class Actor {
@@ -38,7 +87,7 @@ class Actor {
 			new Point(this.rect.topLeft.x, this.rect.topLeft.y),
 			new Point(this.rect.topLeft.x, this.rect.topLeft.y + this.rect.height),
 			new Point(this.rect.topLeft.x + this.rect.width, this.rect.topLeft.y + this.rect.height),
-			new Point(this.rect.topLeft.x + this.rect.height, this.rect.topLeft.y),
+			new Point(this.rect.topLeft.x + this.rect.width, this.rect.topLeft.y),
 		];
 	}
 
@@ -113,6 +162,7 @@ class Crate extends Actor {
 		super(rect, grid, images);
 		const randIdx = Math.floor(Math.random()*3);
 		this.img = this.images[['crate-1', 'crate-2', 'crate-3'][randIdx]];
+		this.vx = 0;
 		this.vy = 0;
 	}
 
@@ -123,19 +173,123 @@ class Crate extends Actor {
 		);
 	}
 
+	push(dx) {
+		const sav = this.rect.topLeft.clone();
+		this.rect.topLeft.x += dx;
+		const colliders = this.grid.getColliders(this);
+		colliders.forEach(c => walkBack(this, c, sav.clone()));
+	}
+
 	tick() {
-		const savy = this.rect.topLeft.y;
+		const sav = this.rect.topLeft.clone();
 		this.vy += G;
+		this.rect.topLeft.x += this.vx;
 		this.rect.topLeft.y += this.vy;
-		let colliders = this.grid.getColliders(this);
-		while (colliders.length > 0) {
-			this.vy = 0;
-			this.rect.topLeft.y -= 1;
-			if (this.rect.topLeft.y < savy) {
-				this.rect.topLeft.y = savy;
+		const colliders = this.grid.getColliders(this);
+		colliders.forEach(c => walkBack(this, c, sav.clone()));
+	}
+}
+
+class Player extends Actor {
+	constructor(rect, grid, images) {
+		super(rect, grid, images);
+		grid.player = this;
+		this.right = true;
+		this.vx = 0;
+		this.vy = 0;
+		this.keys = {};
+		// Remove any previous players
+		for (let i=0; i<grid.actors.length; i++) {
+			if (grid.actors[i] instanceof Player) {
+				grid.actors.splice(i, 1);
+				i--;
 			}
-			colliders = this.grid.getColliders(this, colliders);
 		}
+	}
+
+	draw(ctx) {
+		const img = this.right ? this.images['gopher-right'] : this.images['gopher-left'];
+		ctx.drawImage(img,
+			this.rect.topLeft.x - this.grid.topLeft.x,
+			this.rect.topLeft.y - this.grid.topLeft.y,
+		);
+	}
+
+	keydown(e) {
+		if (!['w', 'a', 's', 'd', ' '].includes(e.key)) {
+			return false;
+		}
+		this.keys[e.key] = true;
+		return true;
+	}
+
+	keyup(e) {
+		delete this.keys[e.key];
+	}
+
+	move(dx, dy) {
+		if (dx != 0) {
+			this.vx = dx;
+			this.right = dx > 0;
+		}
+		if (dy != 0) {
+			this.vy = dy;
+		}
+		const sav = this.rect.topLeft.clone();
+		this.rect.topLeft.x += dx;
+		this.rect.topLeft.y += dy;
+		// Push crates
+		let colliders = this.grid.getColliders(this);
+		colliders.forEach(c => {
+			if (c instanceof Crate) {
+				c.push(dx);
+			}
+		});
+		// Pull crates
+		if (this.keys[' '] && dx != 0) {
+			this.rect.topLeft.x -= 2*dx;
+			const col2 = this.grid.getColliders(this);
+			// Don't get in the way of the crate
+			this.rect.topLeft.x += 2*dx;
+			col2.forEach(c => {
+				if (c instanceof Crate) {
+					c.push(dx);
+				}
+			});
+		}
+		colliders = this.grid.getColliders(this);
+		colliders.forEach(c => walkBack(this, c, sav.clone()));
+	}
+
+	get onSurface() {
+		const sav = this.rect.topLeft.clone();
+		this.rect.topLeft.y += 1;
+		const colliders = this.grid.getColliders(this);
+		this.rect.topLeft = sav;
+		return colliders.length > 0;
+	}
+
+	tick() {
+		const os = this.onSurface;
+		if (this.keys['a']) {
+			this.move(-5, 0);
+		}
+		if (this.keys['d']) {
+			this.move(5, 0);
+		}
+		// Clear tangential velocity
+		if (!this.keys['a'] && !this.keys['d'] && os) {
+			this.vx = 0;
+		}
+		if (this.keys['w'] && os) {
+			this.move(0, -15);
+		}
+		const sav = this.rect.topLeft.clone();
+		this.vy += G;
+		this.rect.topLeft.x += this.vx;
+		this.rect.topLeft.y += this.vy;
+		const colliders = this.grid.getColliders(this);
+		colliders.forEach(c => walkBack(this, c, sav.clone()));
 	}
 }
 
@@ -325,7 +479,16 @@ class Grid {
 			case 'ArrowUp': this.topLeft.y -= mult*this.moveSize; return true;
 			case 'ArrowDown': this.topLeft.y += mult*this.moveSize; return true;
 		} 
+		if (this.player && this.player.keydown(e)) {
+			return true;
+		}
 		return false;
+	}
+
+	keyup(e) {
+		if (this.player) {
+			this.player.keyup(e);
+		}
 	}
 
 	tick() {
@@ -490,13 +653,24 @@ window.addEventListener('load', e => {
 		}
 	});
 
+	document.addEventListener('keyup', e => {
+		grid.keyup(e);
+	});
+
 	function tryDelete(p) {
 		if (palette.placing == 'delete') {
-			const sp = grid.getSnapToGrid(grid.getGridPoint(p));
+			const gp = grid.getGridPoint(p);
+			const sp = grid.getSnapToGrid(gp);
 			const itemLocStr = locStr(grid.getLoc(sp));
 			for (const locStr in grid.terrain) {
 				if (itemLocStr == locStr) {
 					delete grid.terrain[locStr];
+				}
+			}
+			for (let i=0; i<grid.actors.length; i++) {
+				if (grid.actors[i].rect.contains(gp)) {
+					grid.actors.splice(i, 1);
+					break;
 				}
 			}
 		}
@@ -530,6 +704,15 @@ window.addEventListener('load', e => {
 				grid,
 				images);
 			grid.addActor(crate);
+		} else if (palette.placing == 'gopher') {
+			const gp = grid.getGridPoint(p);
+			const player = new Player(
+				new Rect(gp, 
+					images['gopher-right'].width, 
+					images['gopher-right'].height),
+				grid,
+				images);
+			grid.addActor(player);
 		}
 	}
 

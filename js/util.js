@@ -9,8 +9,28 @@ class Point {
 		this.y = y;
 	}
 
+	add(p) {
+		return new Point(this.x+p.x, this.y+p.y);
+	}
+
 	clone() {
 		return new Point(this.x, this.y);
+	}
+
+	dot(p) {
+		return this.x*p.x + this.y*p.y;
+	}
+
+	mag() {
+		return Math.sqrt(this.x*this.x + this.y*this.y);
+	}
+
+	scale(a) {
+		return new Point(this.x*a, this.y*a);
+	}
+
+	sub(p) {
+		return new Point(this.x-p.x, this.y-p.y);
 	}
 }
 
