@@ -17,6 +17,10 @@ class Point {
 		return new Point(this.x, this.y);
 	}
 
+	dist(p) {
+		return this.sub(p).mag();
+	}
+
 	dot(p) {
 		return this.x*p.x + this.y*p.y;
 	}
@@ -32,6 +36,11 @@ class Point {
 	sub(p) {
 		return new Point(this.x-p.x, this.y-p.y);
 	}
+
+	translate(d) {
+		this.x += d.x;
+		this.y += d.y;
+	}
 }
 
 class Rect {
@@ -39,6 +48,10 @@ class Rect {
 		this.topLeft = topLeft;
 		this.width = width; 
 		this.height = height;
+	}
+
+	clone() {
+		return new Rect(this.topLeft.clone(), this.width, this.height);
 	}
 
 	contains(p) {

@@ -4,8 +4,11 @@ import {$, $$, Point, Rect} from './util.js';
 let actorId = 0;
 let begin = false;
 
-// Acceleration due to gravity
-const G = 1.5;
+const G = 1.5;				// Acceleration due to gravity
+const FAR_AWAY = 500;		// Collision detection optimization
+const VERY_FAR_AWAY = 2000;	// Tick optimization
+const N_CLOUDS_START = 10;	// How many clouds we start with
+const N_CLOUDS = 12;		// Spawn up to this many clouds beyond left edge
 
 // For terrain snapping to grid
 function locStr(p) {
@@ -14,6 +17,9 @@ function locStr(p) {
 
 // Slightly inefficient collision detection (don't remember corners)
 function overlaps(item1, item2) {
+	if (item1.rect.topLeft.sub(item2.rect.topLeft).mag() > FAR_AWAY) {
+		return false;
+	}
 	const c1 = item1.corners;
 	const c2 = item2.corners;
 	for (let i=0; i<4; i++) {
@@ -70,6 +76,98 @@ function walkBack(actor, obstacle, origTopLeft) {
 	}
 }
 
+class SunBackground {
+	constructor(params, grid) {
+		this.grid = grid;
+		this.center = params.center;
+		this.r = params.r;
+		this.rayTheta = params.rayTheta;
+		this.nRays = params.nRays;
+		this.skyColor = params.skyColor;
+		this.sunColor = params.sunColor;
+		this.rotRate = params.rotRate;
+		this.startTheta = 0;
+	}
+
+	draw(ctx) {
+		ctx.fillStyle = this.skyColor;
+		ctx.fillRect(0, 0, this.grid.canvas.width, this.grid.canvas.height);
+		ctx.beginPath();
+		ctx.fillStyle = this.sunColor;
+		ctx.arc(this.center.x, this.center.y, this.r, 0, 2*Math.PI);
+		ctx.fill();
+		const dTheta = 2*Math.PI/this.nRays;
+		for (let i=0; i<this.nRays; i++) {
+			ctx.beginPath();
+			ctx.moveTo(this.center.x, this.center.y);
+			const theta = dTheta*i;
+			const ts = this.startTheta+theta-this.rayTheta/2;
+			const te = this.startTheta+theta+this.rayTheta/2;
+			const xs = this.center.x + 2000*Math.cos(ts);
+			const ys = this.center.y + 2000*Math.sin(ts);
+			const xe = this.center.x + 2000*Math.cos(te);
+			const ye = this.center.y + 2000*Math.sin(te);
+			ctx.lineTo(xs, ys);
+			ctx.lineTo(xe, ye);
+			ctx.lineTo(this.center.x, this.center.y);
+			ctx.fill();
+		}
+	}
+
+	tick() {
+		this.startTheta += this.rotRate;
+	}
+}
+
+class Cloud {
+	constructor(topLeft, grid) {
+		this.grid = grid;
+		this.bot = new Rect(new Point(0,45), 150, 20);
+		this.puffs = [
+			{x: 0, y: 45, r: 20},
+			{x: 30, y: 40, r: 25},
+			{x: 60, y: 35, r: 30},
+			{x: 90, y: 30, r: 35},
+			{x: 120, y: 25, r: 40},
+			{x: 150, y: 20, r: 45},
+		];
+		this.topLeft = topLeft;
+		const a = Math.random();
+		this.dx = 0.05 + Math.pow(0.5*a, 2);
+		this.scale = 0.6 + a;
+	}
+
+	draw(ctx) {
+		ctx.save();
+		ctx.translate(this.topLeft.x, this.topLeft.y);
+		ctx.scale(this.scale, this.scale);
+		ctx.strokeStyle = '#bbb';
+		ctx.lineWidth = 20;
+		ctx.strokeRect(this.bot.topLeft.x, this.bot.topLeft.y, this.bot.width, this.bot.height);
+		this.puffs.forEach(p => {
+			ctx.beginPath();
+			ctx.arc(p.x, p.y, p.r, 0, 2*Math.PI);
+			ctx.stroke();
+		});
+		ctx.fillStyle = '#ccc';
+		ctx.fillRect(this.bot.topLeft.x, this.bot.topLeft.y, this.bot.width, this.bot.height);
+		this.puffs.forEach(p => {
+			ctx.beginPath();
+			ctx.arc(p.x, p.y, p.r, 0, 2*Math.PI);
+			ctx.fill();
+		});
+		ctx.restore();
+	}
+
+	tick() {
+		this.topLeft.x += this.dx;
+		// Add some margin
+		if (this.topLeft.x > this.grid.canvas.width + 100) {
+			this.toRemove = true;
+		}
+	}
+}
+
 class Actor {
 	constructor(rect, grid, images) {
 		this.rect = rect;
@@ -93,6 +191,11 @@ class Actor {
 
 	get locStr() {
 		return locStr(this.loc);
+	}
+
+	die() {
+		this.vy = -20;
+		this.dead = true;
 	}
 }
 
@@ -157,6 +260,41 @@ class Bricks extends Actor {
 	}
 }
 
+class Lava extends Actor {
+	constructor(rect, grid, images) {
+		super(rect, grid, images);
+		this.timer = Math.floor(100*Math.random());
+		this.period = 5;
+	}
+
+	draw(ctx) {
+		const bit = Math.floor(this.timer / this.period) % 3;
+		let img, offsetX, offsetY;
+		if (bit == 0) {
+			img = this.images['lava-1'];
+			offsetX = -12;
+			offsetY = -31;
+		} else if (bit == 1) {
+			img = this.images['lava-2'];
+			offsetX = -12;
+			offsetY = -36;
+		} else {
+			img = this.images['lava-3'];
+			offsetX = -10;
+			offsetY = -35;
+		}
+		ctx.drawImage(
+			img,
+			this.rect.topLeft.x - this.grid.topLeft.x + offsetX,
+			this.rect.topLeft.y - this.grid.topLeft.y + offsetY,
+		);
+	}
+
+	tick() {
+		this.timer++;
+	}
+}
+
 class Crate extends Actor {
 	constructor(rect, grid, images) {
 		super(rect, grid, images);
@@ -190,6 +328,117 @@ class Crate extends Actor {
 	}
 }
 
+class MushroomMan extends Actor {
+	constructor(rect, grid, images) {
+		super(rect, grid, images);
+		this.dx = Math.random() > 0.5 ? -2 : 2;
+		this.vx = 0;
+		this.vy = 0;
+		this.timer = 0;
+		this.up = true;
+		this.pushed = false;
+	}
+
+	get img() {
+		if (this.up) {
+			return this.dx < 0 ? 
+				this.images['mushroom-man-left'] : 
+				this.images['mushroom-man-right'];
+		} else {
+			return this.dx < 0 ? 
+				this.images['mushroom-man-boop-left'] : 
+				this.images['mushroom-man-boop-right'];
+		}
+	}
+
+	boop() {
+		this.timer = 120;
+		if (!this.up) {
+			return;
+		}
+		this.up = false;
+		const imgUp = this.images['mushroom-man-left'];
+		const imgDown = this.images['mushroom-man-boop-left'];
+		this.rect = new Rect(
+			new Point(
+				this.rect.topLeft.x, 
+				this.rect.topLeft.y + imgUp.height - imgDown.height),
+			imgDown.width,
+			imgDown.height
+		);
+	}
+
+	unboop() {
+		if (this.up) {
+			return;
+		}
+		const sav = this.rect.clone();
+		const imgUp = this.images['mushroom-man-left'];
+		const imgDown = this.images['mushroom-man-boop-left']; 
+		this.rect = new Rect(
+			new Point(
+				this.rect.topLeft.x, 
+				this.rect.topLeft.y - imgUp.height + imgDown.height),
+			imgUp.width,
+			imgUp.height
+		);
+		const colliders = this.grid.getColliders(this);
+		if (colliders.length > 0) {
+			this.rect = sav;
+			return;
+		}
+		this.up = true;
+		this.pushed = false;
+	}
+
+	draw(ctx) {
+		ctx.drawImage(this.img,
+			this.rect.topLeft.x - this.grid.topLeft.x,
+			this.rect.topLeft.y - this.grid.topLeft.y,
+		);
+	}
+
+	get dxp() {
+		if (this.pushed) return 3*this.dx;
+		return this.dx;
+	}
+
+	push(v) {
+		this.pushed = true;
+	}
+
+	tick() {
+		if (this.timer > 0) {
+			this.timer--;
+		}
+		if (this.timer == 0) {
+			this.unboop();
+		}
+		if (!this.up && !this.pushed) {
+			return;
+		}
+		this.rect.topLeft.x += this.dxp;
+		let colliders = this.grid.getColliders(this);
+		if (colliders.length > 0) {
+			this.rect.topLeft.x -= this.dxp;
+			this.dx = -this.dx;
+			colliders.forEach(c => {
+				if (c instanceof Player && this.up) {
+					c.takeDamage();
+				}
+			});
+			return;
+		}
+		const sav = this.rect.topLeft.clone();
+		this.vx = this.dxp;
+		this.vy += G;
+		this.rect.topLeft.x += this.vx;
+		this.rect.topLeft.y += this.vy;
+		colliders = this.grid.getColliders(this);
+		colliders.forEach(c => walkBack(this, c, sav.clone()));
+	}
+}
+
 class Player extends Actor {
 	constructor(rect, grid, images) {
 		super(rect, grid, images);
@@ -205,6 +454,18 @@ class Player extends Actor {
 				i--;
 			}
 		}
+		this.life = 5;
+	}
+
+	// TODO
+	die() {
+		super.die();
+		this.life = 0;
+	}
+
+	// TODO
+	takeDamage() {
+		console.log('damage');
 	}
 
 	draw(ctx) {
@@ -282,14 +543,33 @@ class Player extends Actor {
 			this.vx = 0;
 		}
 		if (this.keys['w'] && os) {
-			this.move(0, -15);
+			this.move(0, -16);
 		}
 		const sav = this.rect.topLeft.clone();
-		this.vy += G;
+		// Split collisions into x and y to prevent
+		// Hang while pushing crate
 		this.rect.topLeft.x += this.vx;
+		let colliders = this.grid.getColliders(this);
+		colliders.forEach(c => {
+			walkBack(this, c, sav.clone());
+			if (c instanceof MushroomMan) {
+				if (!c.up) {
+					c.push(this.vx);
+				}
+			}
+		});
+		this.vy += G;
 		this.rect.topLeft.y += this.vy;
-		const colliders = this.grid.getColliders(this);
-		colliders.forEach(c => walkBack(this, c, sav.clone()));
+		colliders = this.grid.getColliders(this);
+		colliders.forEach(c => {
+			walkBack(this, c, sav.clone());
+			if (c instanceof MushroomMan) {
+				c.boop();
+			}
+			if (c instanceof Lava) {
+				this.die();
+			}
+		});
 	}
 }
 
@@ -353,13 +633,48 @@ class Minimap {
 }
 
 class Grid {
-	constructor(canvas) {
+	constructor(canvas, editing) {
 		this.canvas = canvas;
 		this.topLeft = new Point(0,0);
 		this.blockSize = 64;
 		this.moveSize = 16; // Should be factor of blockSize
 		this.terrain = {};
 		this.actors = [];
+		this.clouds = [];
+		this.bg = new SunBackground({
+			center: new Point(800, 200),
+			r: 150,
+			sunColor: '#dd3',
+			skyColor: '#98f',
+			nRays: 10,
+			rayTheta: Math.PI/10,
+			rotRate: 0.0005,
+		}, this);
+		this.editing = editing ?? true;
+	}
+
+	addCloud(offscreen) {
+		let p, good=false;
+		outer:
+		for (let n=0; n<20; n++) {
+			const x = offscreen ? -300 : Math.random()*this.canvas.width;
+			const y = Math.random()*2*this.canvas.height/3;
+			p = new Point(x, y);
+			for (let i=0; i<this.clouds.length; i++) {
+				const item = this.clouds[i];
+				if (item.topLeft.dist(p) < 200) {
+					continue outer;
+				}
+			}
+			good = true
+			break;
+		}
+		if (good) {
+			this.clouds.push(new Cloud(p, this));
+			this.clouds.sort((a,b) => {
+				return a.scale - b.scale;
+			});
+		}
 	}
 
 	addActor(actor) {
@@ -395,6 +710,9 @@ class Grid {
 	}
 
 	getColliders(actor, existing) {
+		if (actor.dead) {
+			return [];
+		}
 		const colliders = [];
 		if (existing) {
 			existing.forEach(item => {
@@ -422,30 +740,36 @@ class Grid {
 
 	draw() {
 		const ctx = this.canvas.getContext('2d');
+		// Draw background
+		this.bg.draw(ctx);
+		this.clouds.forEach(b => b.draw(ctx));
 		// Draw the grid
-		const xMod = this.topLeft.x % this.blockSize;
-		const yMod = this.topLeft.y % this.blockSize;
-		for (let x = -xMod; x < this.canvas.width; x += this.blockSize) {
-			ctx.strokeStyle = '#33a';
-			ctx.lineWidth = 1;
-			ctx.beginPath();
-			ctx.moveTo(x, 0);
-			ctx.lineTo(x, this.canvas.height);
-			ctx.stroke();
-		}
-		for (let y = -yMod; y < this.canvas.height; y += this.blockSize) {
-			ctx.strokeStyle = '#33a';
-			ctx.lineWidth = 1;
-			ctx.beginPath();
-			ctx.moveTo(0, y);
-			ctx.lineTo(this.canvas.width, y);
-			ctx.stroke();
+		if (this.editing) {
+			const xMod = this.topLeft.x % this.blockSize;
+			const yMod = this.topLeft.y % this.blockSize;
+			for (let x = -xMod; x < this.canvas.width; x += this.blockSize) {
+				ctx.strokeStyle = '#33a';
+				ctx.lineWidth = 1;
+				ctx.beginPath();
+				ctx.moveTo(x, 0);
+				ctx.lineTo(x, this.canvas.height);
+				ctx.stroke();
+			}
+			for (let y = -yMod; y < this.canvas.height; y += this.blockSize) {
+				ctx.strokeStyle = '#33a';
+				ctx.lineWidth = 1;
+				ctx.beginPath();
+				ctx.moveTo(0, y);
+				ctx.lineTo(this.canvas.width, y);
+				ctx.stroke();
+			}
 		}
 		// Draw terrain
 		for (const locStr in this.terrain) {
 			const item = this.terrain[locStr];
 			item.draw(ctx);
 		}
+		// Draw actors
 		this.actors.forEach(a => a.draw(ctx));
 	}
 
@@ -493,6 +817,27 @@ class Grid {
 
 	tick() {
 		this.actors.forEach(a => a.tick());
+		this.clouds.forEach(b => b.tick());
+		this.bg.tick();
+		for (const locStr in this.terrain) {
+			const t = this.terrain[locStr];
+			if (t.tick) {
+				t.tick();
+			}
+		}
+		// Remove clouds
+		const keepClouds = [];
+		for (let i=0; i<this.clouds.length; i++) {
+			if (!this.clouds[i].toRemove) {
+				keepClouds.push(this.clouds[i]);
+			}
+		}
+		this.clouds = keepClouds;
+		// Spawn new clouds
+		// Don't use while loop because it can hang game
+		if (this.clouds.length < N_CLOUDS) {
+			this.addCloud(true);
+		}
 	}
 }
 
@@ -513,32 +858,48 @@ class PaletteElement {
 		return false;
 	}
 
+	get mult() {
+		const wMult = this.img.width / 64;
+		const hMult = this.img.height / 64;
+		if (wMult >= hMult && wMult > 1) {
+			return wMult;
+		}
+		if (hMult >= wMult && hMult > 1) {
+			return hMult;
+		}
+		return 1;
+	}
+
+	get width() {
+		return this.img.width / this.mult;
+	}
+
+	get height() {
+		return this.img.height / this.mult;
+	}
+
 	draw(ctx) {
+		const r = this.rect;
 		if (this.palette.placing == this.name) {
 			ctx.strokeStyle = '#f00';
 			ctx.lineWidth = 2;
-			ctx.strokeRect(
-				this.topLeft.x-1, 
-				this.topLeft.y-1,
-				this.img.width+2,
-				this.img.height+2);
+			ctx.strokeRect(r.topLeft.x-1, r.topLeft.y-1, r.width+2, r.height+2);
 		}
-		ctx.drawImage(
-			this.img,
-			this.topLeft.x, 
-			this.topLeft.y);
+		ctx.drawImage(this.img, r.topLeft.x, r.topLeft.y, r.width, r.height);
 	}
 
 	get rect() {
-		if (!this._rect) {
-			this._rect = new Rect(this.topLeft, this.img.width, this.img.height);
-		}
-		return this._rect;
+		const w = this.width;
+		const h = this.height;
+		const x = this.topLeft.x + 32 - w/2;
+		const y = this.topLeft.y;
+		return new Rect(new Point(x, y), w, h);
 	}
 }
 
 class Palette {
 	constructor(params) {
+		this.images = params.images;
 		this.centerX = 1120;
 		this.topY = 20;
 		this.width = 120;
@@ -557,7 +918,7 @@ class Palette {
 			},
 			// this.topY recalculated in draw method
 			topLeft: new Point(
-				this.centerX - img.width/2, 
+				this.centerX - 32, 
 				this.topY),
 		}));
 	}
@@ -587,10 +948,10 @@ class Palette {
 		for (let i=this.firstIdx; i<this.elts.length; i++) {
 			this.elts[i].topLeft.y = y;
 			// Don't run over screen bottom
-			if (y + this.elts[i].img.height < canvas.height - this.topY - 20) {
+			if (y + this.elts[i].height < canvas.height - this.topY - 20) {
 				this.elts[i].draw(ctx);
 			}
-			y += this.elts[i].img.height + 10;
+			y += this.elts[i].height + 10;
 		}
 		// Move earlier elements out of screen
 		for (let i=0; i<this.firstIdx; i++) {
@@ -614,9 +975,9 @@ class Palette {
 window.addEventListener('load', e => {
 	const canvas = $('#editor-canvas');
 	const grid = new Grid(canvas);
-	const palette = new Palette();
 	const minimap = new Minimap(grid);
-	const images = [];
+	const images = {};
+	const palette = new Palette({images});
 
 	let nLoaded = 0;
 	// Load images
@@ -624,9 +985,14 @@ window.addEventListener('load', e => {
 		"delete.png",
 		"bricks-1.png", "bricks-2.png", 
 		"crate-1.png", "crate-2.png", "crate-3.png",
-		"stone-floor.png", "stone-floor-island.png", "stone-floor-left.png", "stone-floor-middle.png",
-		"stone-floor-right.png", 
-		"gopher-left.png", "gopher-right.png"];
+		"stone-floor.png", "stone-floor-island.png", "stone-floor-left.png", 
+		"stone-floor-middle.png", "stone-floor-right.png", 
+		"gopher-left.png", "gopher-right.png",
+		"mushroom-man-left.png", "mushroom-man-right.png",
+		"mushroom-man-boop-left.png", "mushroom-man-boop-right.png",
+		"lava-1.png", "lava-2.png", "lava-3.png",
+		"scroll-up.png", "scroll-down.png",
+	];
 
 	imgRes.forEach(imgFname => {
 		const name = imgFname.split(".")[0];
@@ -641,9 +1007,15 @@ window.addEventListener('load', e => {
 				palette.add('bricks', images['bricks-1']);
 				palette.add('crate', images['crate-1']);
 				palette.add('gopher', images['gopher-right']);
+				palette.add('mushroom-man', images['mushroom-man-left']);
+				palette.add('lava', images['lava-1']);
 			}
 		});
 	});
+
+	for (let i=0; i<N_CLOUDS_START; i++) {
+		grid.addCloud();
+	}
 
 	document.addEventListener('keydown', e => {
 		// Prevent default only if we consume the keypress
@@ -677,16 +1049,21 @@ window.addEventListener('load', e => {
 	}
 
 	function tryPlaceTerrain(p) {
+		const sp = grid.getSnapToGrid(grid.getGridPoint(p));
 		if (palette.placing == 'stone-floor') {
-			const sp = grid.getSnapToGrid(grid.getGridPoint(p));
 			const item = new StoneFloor(
 				new Rect(sp, 64, 64),
 				grid,
 				images);
 			grid.addTerrain(item);
 		} else if (palette.placing == 'bricks') {
-			const sp = grid.getSnapToGrid(grid.getGridPoint(p));
 			const item = new Bricks(
+				new Rect(sp, 64, 64),
+				grid,
+				images);
+			grid.addTerrain(item);
+		} else if (palette.placing == 'lava') {
+			const item = new Lava(
 				new Rect(sp, 64, 64),
 				grid,
 				images);
@@ -695,8 +1072,8 @@ window.addEventListener('load', e => {
 	}
 
 	function tryPlaceActor(p) {
+		const gp = grid.getGridPoint(p);
 		if (palette.placing == 'crate') {
-			const gp = grid.getGridPoint(p);
 			const crate = new Crate(
 				new Rect(gp, 
 					images['crate-1'].width, 
@@ -705,7 +1082,6 @@ window.addEventListener('load', e => {
 				images);
 			grid.addActor(crate);
 		} else if (palette.placing == 'gopher') {
-			const gp = grid.getGridPoint(p);
 			const player = new Player(
 				new Rect(gp, 
 					images['gopher-right'].width, 
@@ -713,6 +1089,14 @@ window.addEventListener('load', e => {
 				grid,
 				images);
 			grid.addActor(player);
+		} else if (palette.placing == 'mushroom-man') {
+			const mm = new MushroomMan(
+				new Rect(gp,
+					images['mushroom-man-left'].width,
+					images['mushroom-man-left'].height),
+				grid,
+				images);
+			grid.addActor(mm);
 		}
 	}
 
