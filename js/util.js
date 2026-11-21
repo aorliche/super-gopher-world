@@ -63,4 +63,8 @@ class Rect {
 		const h = this.height;
 		return px >= x && (px <= x+w) && py >= y && (py <= y+h);
 	}
+
+	get hypot() {
+		return Math.sqrt(this.width*this.width + this.height*this.height);
+	}
 }

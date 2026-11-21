@@ -5,10 +5,26 @@ let actorId = 0;
 let begin = false;
 
 const G = 1.5;				// Acceleration due to gravity
-const FAR_AWAY = 500;		// Collision detection optimization
-const VERY_FAR_AWAY = 2000;	// Tick optimization
+const FAR_AWAY = 1000;		// Tick optimization, how far away from edge of the screen to stop update
 const N_CLOUDS_START = 10;	// How many clouds we start with
 const N_CLOUDS = 12;		// Spawn up to this many clouds beyond left edge
+const PALETTE_CENTER_X = 1120;	// Center of palette
+const PALETTE_TOP_Y = 20;		// Margin from top and bottom to palette
+const PALETTE_IMG_SIZE = 64;	// Max dimension of palette element
+const PALETTE_WIDTH = 100;	// Width of the palette strip
+const PALETTE_Y_PAD = 10;	// Padding on either end of palette element
+const ZIGGY_DX = 2;			// Ziggy moves this fast per frame
+const ZIGGY_DY = 1;
+const ZIGGY_X_RADIUS = 200; // Ziggy travels twice this many pixels in x
+const ZIGGY_Y_RADIUS = 15;	// Ziggy travels twice this many pixels in y
+const ZIGGY_X_TO = ZIGGY_X_RADIUS/ZIGGY_DX + 50;	// Make sure ziggy doesn't get stuck
+const DAMAGE_BLINK_T = 5;	// Frames to blink on off for taking damage
+const DAMAGE_INV_T = 60;	// Invulnerable frames while can't take more damage
+const START_LIFE = 3;		// Lives you start with
+const MAX_LIFE = 5;			// Max lives
+const HEART_SIZE = 32;		// HUD heart width
+const HEART_PAD = 10;		// HUD heart padding
+const HEART_TIME = 5;		// Heart exploding animation time
 
 // For terrain snapping to grid
 function locStr(p) {
@@ -17,9 +33,13 @@ function locStr(p) {
 
 // Slightly inefficient collision detection (don't remember corners)
 function overlaps(item1, item2) {
-	if (item1.rect.topLeft.sub(item2.rect.topLeft).mag() > FAR_AWAY) {
+	// I'm actually not sure that the "fast path" is any faster
+	const d = item1.rect.topLeft.sub(item2.rect.topLeft).mag();
+	const dMax = item1.rect.hypot + item2.rect.hypot;
+	if (d > dMax) {
 		return false;
 	}
+	// Since the slow path is so simple
 	const c1 = item1.corners;
 	const c2 = item2.corners;
 	for (let i=0; i<4; i++) {
@@ -173,6 +193,7 @@ class Actor {
 		this.rect = rect;
 		this.grid = grid;
 		this.images = images;
+		// For terrain only
 		this.loc = grid.getLoc(rect.topLeft);
 	}
 
@@ -193,6 +214,7 @@ class Actor {
 		return locStr(this.loc);
 	}
 
+	// Jump up and fall down
 	die() {
 		this.vy = -20;
 		this.dead = true;
@@ -328,6 +350,126 @@ class Crate extends Actor {
 	}
 }
 
+class Powerup extends Actor {
+	constructor(rect, grid, images) {
+		super(rect, grid, images);
+	}
+}
+
+class Heart extends Powerup {
+	constructor(rect, grid, images) {
+		super(rect, grid, images);
+		this.img = images['heart'];
+		this.timer = 0;
+		this.exploding = false;
+	}
+
+	draw(ctx) {
+		const mult = this.timer / HEART_TIME + 1;
+		const w = this.img.width * mult;
+		const h = this.img.height * mult;
+		let x = this.rect.topLeft.x - this.grid.topLeft.x;
+		let y = this.rect.topLeft.y - this.grid.topLeft.y;
+		x = x + this.img.width/2 - w/2;
+		y = y + this.img.height/2 - h/2;
+		ctx.globalAlpha = 2 - mult;
+		ctx.drawImage(this.img, x, y, w, h);
+		ctx.globalAlpha = 1;
+	}
+
+	explode() {
+		this.exploding = true;
+	}
+	
+	tick() {
+		if (this.exploding) {
+			this.timer++;
+		}
+		if (this.timer >= HEART_TIME) {
+			for (let i=0; i<this.grid.powerups.length; i++) {
+				if (this.grid.powerups[i] == this) {
+					this.grid.powerups.splice(i, 1);
+					i--;
+				}
+			}
+		}
+	}
+}
+
+class Ziggy extends Actor {
+	constructor(rect, grid, images) {
+		super(rect, grid, images);
+		this.dx = Math.random() > 0.5 ? -ZIGGY_DX : ZIGGY_DX;
+		this.dy = Math.random() > 0.5 ? -ZIGGY_DY : ZIGGY_DY;
+		this.vx = 0;
+		this.vy = 0;
+		this.xLimLeft = this.rect.topLeft.x - ZIGGY_X_RADIUS;
+		this.xLimRight = this.rect.topLeft.x + ZIGGY_X_RADIUS;
+		this.yLimTop = this.rect.topLeft.y - ZIGGY_Y_RADIUS;
+		this.yLimBot = this.rect.topLeft.y + ZIGGY_Y_RADIUS;
+		this.xTimer = 0;
+		this.yTimer = 0;
+		this.moving = true;
+	}
+
+	get img() {
+		return this.dx < 0 ?
+			this.images['ziggy-left'] :
+			this.images['ziggy-right'];
+	}
+	
+	draw(ctx) {
+		ctx.drawImage(this.img,
+			this.rect.topLeft.x - this.grid.topLeft.x,
+			this.rect.topLeft.y - this.grid.topLeft.y,
+		);
+	}
+
+	tick() {
+		this.moving = true;
+		if (this.rect.topLeft.x < this.xLimLeft) {
+			this.dx = Math.abs(this.dx);
+			this.xTimer = 0;
+		}
+		if (this.rect.topLeft.x > this.xLimRight) {
+			this.dx = -Math.abs(this.dx);
+			this.xTimer = 0;
+		}
+		if (this.rect.topLeft.y < this.yLimTop) {
+			this.dy = Math.abs(this.dy);
+		}
+		if (this.rect.topLeft.y > this.yLimBot) {
+			this.dy = -Math.abs(this.dy);
+		}
+		if (this.xTimer++ > ZIGGY_X_TO) {
+			this.dx = -this.dx;
+			this.xTimer = 0;
+		}
+		this.rect.topLeft.x += this.dx;
+		let colliders = this.grid.getColliders(this);
+		if (colliders.length > 0) {
+			this.moving = false;
+			this.rect.topLeft.x -= this.dx;
+			colliders.forEach(c => {
+				if (c instanceof Player) {
+					c.takeDamage();
+				}
+			});
+		}
+		this.rect.topLeft.y += this.dy;
+		colliders = this.grid.getColliders(this);
+		if (colliders.length > 0) {
+			this.rect.topLeft.y -= this.dy;
+			colliders.forEach(c => {
+				// Swooping down on player
+				if (c instanceof Player && this.dy > 0) {
+					c.takeDamage();
+				}
+			});
+		}
+	}
+}
+
 class MushroomMan extends Actor {
 	constructor(rect, grid, images) {
 		super(rect, grid, images);
@@ -450,25 +592,57 @@ class Player extends Actor {
 		// Remove any previous players
 		for (let i=0; i<grid.actors.length; i++) {
 			if (grid.actors[i] instanceof Player) {
+				// Clear save timeout
+				clearInterval(grid.actors[i].intId);
 				grid.actors.splice(i, 1);
 				i--;
 			}
 		}
-		this.life = 5;
+		this.life = START_LIFE;
+		this.invTimer = 0;
+		// For respawning on death
+		this.lastPast = {rect: this.rect.clone(), life: this.life, vx: 0, vy: 0};
+		this.lastCur = {rect: this.rect.clone(), life: this.life, vx: 0, vy: 0};
+		this.intId = setInterval(() => {
+			if (this.life > 0 && this.onSurface) {
+				this.lastPast = this.lastCur;
+				this.lastCur = {
+					rect: this.rect.clone(),
+					life: this.life,
+					vx: this.vx,
+					vy: this.vy,
+				};
+			}
+		}, 5000);
 	}
 
-	// TODO
 	die() {
 		super.die();
 		this.life = 0;
+		setTimeout(() => {
+			this.rect = this.lastPast.rect;
+			this.life = this.lastPast.life;
+			this.vx = this.lastPast.vx;
+			this.vy = this.lastPast.vy;
+			this.dead = false;
+		}, 3000);
 	}
 
-	// TODO
 	takeDamage() {
-		console.log('damage');
+		if (this.life == 0 || this.invTimer > 0) {
+			return;
+		}
+		this.invTimer = DAMAGE_INV_T;
+		this.life--;
+		if (this.life == 0) {
+			this.die();
+		}
 	}
 
 	draw(ctx) {
+		if (this.invTimer > 0 && this.invTimer % DAMAGE_BLINK_T > DAMAGE_BLINK_T/2) {
+			return;
+		}
 		const img = this.right ? this.images['gopher-right'] : this.images['gopher-left'];
 		ctx.drawImage(img,
 			this.rect.topLeft.x - this.grid.topLeft.x,
@@ -530,7 +704,21 @@ class Player extends Actor {
 		return colliders.length > 0;
 	}
 
+	get ziggy() {
+		const sav = this.rect.topLeft.clone();
+		this.rect.topLeft.y += 1;
+		const colliders = this.grid.getColliders(this);
+		this.rect.topLeft = sav;
+		if (colliders.length == 1 && colliders[0] instanceof Ziggy) {
+			return colliders[0];
+		}
+		return null;
+	}
+
 	tick() {
+		if (this.invTimer > 0) {
+			this.invTimer--;
+		}
 		const os = this.onSurface;
 		if (this.keys['a']) {
 			this.move(-5, 0);
@@ -545,6 +733,11 @@ class Player extends Actor {
 		if (this.keys['w'] && os) {
 			this.move(0, -16);
 		}
+		// Check if on top of Ziggy
+		const ziggy = this.ziggy;
+		if (ziggy && ziggy.moving) {
+			this.rect.topLeft.x += ziggy.dx;
+		}
 		const sav = this.rect.topLeft.clone();
 		// Split collisions into x and y to prevent
 		// Hang while pushing crate
@@ -555,7 +748,15 @@ class Player extends Actor {
 			if (c instanceof MushroomMan) {
 				if (!c.up) {
 					c.push(this.vx);
+				} else {
+					this.takeDamage();
 				}
+			}
+			if (c instanceof Ziggy) {
+				this.takeDamage();
+			}
+			if (c instanceof Lava) {
+				this.die();
 			}
 		});
 		this.vy += G;
@@ -570,6 +771,18 @@ class Player extends Actor {
 				this.die();
 			}
 		});
+		// Consider collisions with powerups
+		for (let i=0; i<this.grid.powerups.length; i++) {
+			const pu = this.grid.powerups[i];
+			if (overlaps(this, pu)) {
+				if (pu instanceof Heart && !pu.exploding) {
+					pu.explode();
+					if (this.life < MAX_LIFE) {
+						this.life++;
+					}
+				}
+			}
+		}
 	}
 }
 
@@ -640,6 +853,7 @@ class Grid {
 		this.moveSize = 16; // Should be factor of blockSize
 		this.terrain = {};
 		this.actors = [];
+		this.powerups = [];
 		this.clouds = [];
 		this.bg = new SunBackground({
 			center: new Point(800, 200),
@@ -677,7 +891,7 @@ class Grid {
 		}
 	}
 
-	addActor(actor) {
+	addActor(actor, powerup) {
 		// Check whether we overlap with anything
 		// Terrain
 		for (const locStr in this.terrain) {
@@ -692,7 +906,17 @@ class Grid {
 				return false;
 			}
 		}
-		this.actors.push(actor);
+		// Powerups
+		for (let i=0; i<this.powerups.length; i++) {
+			if (overlaps(actor, this.powerups[i])) {
+				return false;
+			}
+		}
+		if (powerup) {
+			this.powerups.push(actor);
+		} else {
+			this.actors.push(actor);
+		}
 		return true;
 	}
 
@@ -709,33 +933,15 @@ class Grid {
 		return true;
 	}
 
-	getColliders(actor, existing) {
-		if (actor.dead) {
-			return [];
-		}
-		const colliders = [];
-		if (existing) {
-			existing.forEach(item => {
-				if (overlaps(actor, item)) {
-					colliders.push(item);
-				}
-			});
-			return colliders;
-		}
-		for (const locStr in this.terrain) {
-			if (overlaps(actor, this.terrain[locStr])) {
-				colliders.push(this.terrain[locStr]);
+	// Special method for determining if actor is close to being on screen
+	contains(item, rect) {
+		const cs = item.corners;
+		for (let i=0; i<4; i++) {
+			if (rect.contains(cs[i])) {
+				return true;
 			}
 		}
-		for (let i=0; i<this.actors.length; i++) {
-			if (actor == this.actors[i]) {
-				continue;
-			}
-			if (overlaps(actor, this.actors[i])) {
-				colliders.push(this.actors[i]);
-			}
-		}
-		return colliders;
+		return false;
 	}
 
 	draw() {
@@ -769,8 +975,39 @@ class Grid {
 			const item = this.terrain[locStr];
 			item.draw(ctx);
 		}
+		// Draw powerups
+		this.powerups.forEach(p => p.draw(ctx));
 		// Draw actors
 		this.actors.forEach(a => a.draw(ctx));
+	}
+
+	getColliders(actor, existing) {
+		if (actor.dead) {
+			return [];
+		}
+		const colliders = [];
+		if (existing) {
+			existing.forEach(item => {
+				if (overlaps(actor, item)) {
+					colliders.push(item);
+				}
+			});
+			return colliders;
+		}
+		for (const locStr in this.terrain) {
+			if (overlaps(actor, this.terrain[locStr])) {
+				colliders.push(this.terrain[locStr]);
+			}
+		}
+		for (let i=0; i<this.actors.length; i++) {
+			if (actor == this.actors[i]) {
+				continue;
+			}
+			if (overlaps(actor, this.actors[i])) {
+				colliders.push(this.actors[i]);
+			}
+		}
+		return colliders;
 	}
 
 	// p in screen coords
@@ -815,13 +1052,38 @@ class Grid {
 		}
 	}
 
+	// Not used
+	get screenRect() {
+		return new Rect(this.topLeft.clone(), this.canvas.width, this.canvas.height);
+	}
+
+	// Item is close to being on screen
+	get screenRectWithBuffer() {
+		const xc = this.topLeft.x + this.canvas.width/2;
+		const yc = this.topLeft.y + this.canvas.height/2;
+		const w = this.canvas.width + FAR_AWAY;
+		const h = this.canvas.height + FAR_AWAY;
+		const topLeft = new Point(xc - w/2, yc - h/2);
+		return new Rect(topLeft, w, h);
+	}
+
 	tick() {
-		this.actors.forEach(a => a.tick());
+		const rect = this.screenRectWithBuffer;
+		this.actors.forEach(a => {
+			if (this.contains(a, rect)) {
+				a.tick();
+			}
+		});
+		this.powerups.forEach(p => {
+			if (this.contains(p, rect)) {
+				p.tick();
+			}
+		});
 		this.clouds.forEach(b => b.tick());
 		this.bg.tick();
 		for (const locStr in this.terrain) {
 			const t = this.terrain[locStr];
-			if (t.tick) {
+			if (t.tick && this.contains(t, rect)) {
 				t.tick();
 			}
 		}
@@ -848,10 +1110,11 @@ class PaletteElement {
 		this.img = params.img;
 		this.clickFn = params.clickFn;
 		this.topLeft = params.topLeft;
+		this.hovering = false;
 	}
 
 	click(p) {
-		if (this.rect.contains(p)) {
+		if (this.paddedRect.contains(p)) {
 			this.clickFn();
 			return true;
 		}
@@ -859,8 +1122,8 @@ class PaletteElement {
 	}
 
 	get mult() {
-		const wMult = this.img.width / 64;
-		const hMult = this.img.height / 64;
+		const wMult = this.img.width / PALETTE_IMG_SIZE;
+		const hMult = this.img.height / PALETTE_IMG_SIZE;
 		if (wMult >= hMult && wMult > 1) {
 			return wMult;
 		}
@@ -880,10 +1143,22 @@ class PaletteElement {
 
 	draw(ctx) {
 		const r = this.rect;
-		if (this.palette.placing == this.name) {
+		const rp = this.paddedRect;
+		ctx.globalAlpha = 0.2;
+		if (this.palette.placing == this.name || this.hovering) {
+			ctx.fillStyle = '#f00';
+			ctx.fillRect(rp.topLeft.x, rp.topLeft.y, rp.width, rp.height);
+			ctx.globalAlpha = 1;
 			ctx.strokeStyle = '#f00';
 			ctx.lineWidth = 2;
-			ctx.strokeRect(r.topLeft.x-1, r.topLeft.y-1, r.width+2, r.height+2);
+			ctx.strokeRect(rp.topLeft.x, rp.topLeft.y, rp.width, rp.height);
+		} else {
+			ctx.fillStyle = '#333';
+			ctx.fillRect(rp.topLeft.x, rp.topLeft.y, rp.width, rp.height);
+			ctx.globalAlpha = 1;
+			ctx.strokeStyle = '#333';
+			ctx.lineWidth = 2;
+			ctx.strokeRect(rp.topLeft.x, rp.topLeft.y, rp.width, rp.height);
 		}
 		ctx.drawImage(this.img, r.topLeft.x, r.topLeft.y, r.width, r.height);
 	}
@@ -891,21 +1166,59 @@ class PaletteElement {
 	get rect() {
 		const w = this.width;
 		const h = this.height;
-		const x = this.topLeft.x + 32 - w/2;
+		const x = this.topLeft.x + PALETTE_WIDTH/2 - w/2;
 		const y = this.topLeft.y;
 		return new Rect(new Point(x, y), w, h);
+	}
+
+	get paddedRect() {
+		const r = this.rect;
+		const x = r.topLeft.x + r.width/2 - PALETTE_WIDTH/2;
+		const y = r.topLeft.y - PALETTE_Y_PAD;
+		return new Rect(new Point(x, y), PALETTE_WIDTH, r.height + 2*PALETTE_Y_PAD);
+	}
+
+	mousemove(p) {
+		this.hovering = this.paddedRect.contains(p);
+	}
+
+	mouseout() {
+		this.hovering = false;
 	}
 }
 
 class Palette {
 	constructor(params) {
 		this.images = params.images;
-		this.centerX = 1120;
-		this.topY = 20;
-		this.width = 120;
+		this.canvas = params.canvas;
 		this.elts = [];
+		this.packedElts = [];
 		this.firstIdx = 0;
+		this.lastIdx = 0; // Updated in pack and used to determine if we can scroll more
 		this.placing = '';
+		this.scrollUpElt = new PaletteElement({
+			palette: this,
+			name: 'scroll-up',
+			img: this.images['scroll-up'],
+			clickFn: () => {
+				this.scrollUp();
+			},
+			topLeft: new Point(
+				PALETTE_CENTER_X - PALETTE_WIDTH/2,
+				PALETTE_TOP_Y),
+		});
+		// Top y gets recalculated in pack method
+		this.scrollDownElt = new PaletteElement({
+			palette: this,
+			name: 'scroll-down',
+			img: this.images['scroll-down'],
+			clickFn: () => {
+				this.scrollDown();
+			},
+			topLeft: new Point(
+				PALETTE_CENTER_X - PALETTE_WIDTH/2,
+				PALETTE_TOP_Y),
+		});
 	}
 
 	add(name, img) {
@@ -916,17 +1229,18 @@ class Palette {
 			clickFn: () => {
 				this.placing = name;
 			},
-			// this.topY recalculated in draw method
+			// topLeft.y recalculated in pack method
 			topLeft: new Point(
-				this.centerX - 32, 
-				this.topY),
+				PALETTE_CENTER_X - PALETTE_WIDTH/2, 
+				PALETTE_TOP_Y),
 		}));
+		this.pack();
 	}
 
 	// Return true if we've hit a palette element
 	click(p) {
-		for (let i=0; i<this.elts.length; i++) {
-			const elt = this.elts[i];
+		for (let i=0; i<this.packedElts.length; i++) {
+			const elt = this.packedElts[i];
 			if (elt.click(p)) {
 				return true;
 			}
@@ -935,39 +1249,83 @@ class Palette {
 	}
 
 	draw(ctx) {
-		const canvas = $('#editor-canvas');
-		// Draw background
-		ctx.globalAlpha = 0.2;
-		ctx.fillStyle = '#000';
-		ctx.fillRect(this.centerX-this.width/2, this.topY, this.width, canvas.height-2*this.topY);
-		ctx.globalAlpha = 1;
-		ctx.strokeStyle = '#000';
-		ctx.strokeRect(this.centerX-this.width/2, this.topY, this.width, canvas.height-2*this.topY);
-		// Recalculate y positions and draw
-		let y = this.topY + 20;
+		this.packedElts.forEach(e => e.draw(ctx));
+	}
+
+	mousemove(p) {
+		this.packedElts.forEach(e => {
+			e.mousemove(p);
+		});
+	}
+
+	mouseout() {
+		this.packedElts.forEach(e => {
+			e.mouseout();
+		});
+	}
+
+	pack() {
+		let hUsed = 0;
+		hUsed += this.scrollUpElt.paddedRect.height;
+		hUsed += this.scrollDownElt.paddedRect.height;
 		for (let i=this.firstIdx; i<this.elts.length; i++) {
-			this.elts[i].topLeft.y = y;
-			// Don't run over screen bottom
-			if (y + this.elts[i].height < canvas.height - this.topY - 20) {
-				this.elts[i].draw(ctx);
+			const hNew = hUsed + this.elts[i].paddedRect.height;
+			if (hNew > this.canvas.height - 2*PALETTE_TOP_Y) {
+				break;
 			}
-			y += this.elts[i].height + 10;
+			this.lastIdx = i;
+			hUsed = hNew;
 		}
-		// Move earlier elements out of screen
-		for (let i=0; i<this.firstIdx; i++) {
-			this.elts[i].topLeft.y = -1000;
+		const pad = 
+			(this.canvas.height - 2*PALETTE_TOP_Y - hUsed) 
+			/ (this.lastIdx - this.firstIdx + 2);
+		this.packedElts = [this.scrollUpElt];
+		let y = PALETTE_TOP_Y + this.scrollUpElt.paddedRect.height;
+		for (let i=this.firstIdx; i<=this.lastIdx; i++) {
+			const elt = this.elts[i];
+			elt.topLeft.y = y + pad;
+			this.packedElts.push(elt);
+			y += pad + elt.paddedRect.height;
 		}
+		this.scrollDownElt.topLeft.y = pad + y;
+		this.packedElts.push(this.scrollDownElt);
 	}
 
 	scrollDown() {
-		if (this.firstIdx < this.elts.length-1) {
+		if (this.lastIdx < this.elts.length-1) {
 			this.firstIdx++;
 		}
+		this.pack();
 	}
 
 	scrollUp() {
 		if (this.firstIdx > 0) {
 			this.firstIdx--;
+		}
+		this.pack();
+	}
+}
+
+class HUD {
+	constructor(grid, images) {
+		this.grid = grid;
+		this.images = images;
+	}
+
+	draw(ctx) {
+		// Player life
+		const heart = this.images['heart'];
+		const empty = this.images['heart-empty']
+		if (this.grid.player && heart && empty) {
+			for (let i=0; i<MAX_LIFE; i++) {
+				const img = i < this.grid.player.life ? heart : empty;
+				const x = this.grid.canvas.width - (HEART_PAD + HEART_SIZE) * (i + 1);
+				const y = 20;
+				const ow = img.width;
+				const oh = img.height;
+				const h = HEART_SIZE/ow * oh;
+				ctx.drawImage(img, x, y, HEART_SIZE, h);
+			}
 		}
 	}
 }
@@ -977,7 +1335,8 @@ window.addEventListener('load', e => {
 	const grid = new Grid(canvas);
 	const minimap = new Minimap(grid);
 	const images = {};
-	const palette = new Palette({images});
+	let palette = null; // Initialize palette only after we've loaded images
+	const hud = new HUD(grid, images);
 
 	let nLoaded = 0;
 	// Load images
@@ -992,6 +1351,8 @@ window.addEventListener('load', e => {
 		"mushroom-man-boop-left.png", "mushroom-man-boop-right.png",
 		"lava-1.png", "lava-2.png", "lava-3.png",
 		"scroll-up.png", "scroll-down.png",
+		"ziggy-left.png", "ziggy-right.png",
+		"heart.png", "heart-empty.png",
 	];
 
 	imgRes.forEach(imgFname => {
@@ -1002,13 +1363,16 @@ window.addEventListener('load', e => {
 		img.addEventListener('load', () => {
 			nLoaded++;
 			if (nLoaded == imgRes.length) {
+				palette = new Palette({images, canvas});
 				palette.add('delete', images['delete']);
 				palette.add('stone-floor', images['stone-floor']);
 				palette.add('bricks', images['bricks-1']);
+				palette.add('lava', images['lava-1']);
 				palette.add('crate', images['crate-1']);
 				palette.add('gopher', images['gopher-right']);
 				palette.add('mushroom-man', images['mushroom-man-left']);
-				palette.add('lava', images['lava-1']);
+				palette.add('ziggy', images['ziggy-left']);
+				palette.add('heart', images['heart']);
 			}
 		});
 	});
@@ -1042,6 +1406,12 @@ window.addEventListener('load', e => {
 			for (let i=0; i<grid.actors.length; i++) {
 				if (grid.actors[i].rect.contains(gp)) {
 					grid.actors.splice(i, 1);
+					break;
+				}
+			}
+			for (let i=0; i<grid.powerups.length; i++) {
+				if (grid.powerups[i].rect.contains(gp)) {
+					grid.powerups.splice(i, 1);
 					break;
 				}
 			}
@@ -1097,16 +1467,41 @@ window.addEventListener('load', e => {
 				grid,
 				images);
 			grid.addActor(mm);
+		} else if (palette.placing == 'ziggy') {
+			const z = new Ziggy(
+				new Rect(gp,
+					images['ziggy-left'].width,
+					images['ziggy-left'].height),
+				grid,
+				images);
+			grid.addActor(z);
+		} else if (palette.placing == 'heart') {
+			const h = new Heart(
+				new Rect(gp,
+					images['heart'].width,
+					images['heart'].height),
+				grid,
+				images);
+			grid.addActor(h, true);
 		}
 	}
 
 	canvas.addEventListener('mousemove', e => {
+		const p = new Point(e.offsetX, e.offsetY);
 		if (e.buttons === 1) {
-			const p = new Point(e.offsetX, e.offsetY);
 			tryDelete(p);
 			tryPlaceTerrain(p);
 			tryPlaceActor(p);
+		} else {
+			const gp = grid.getGridPoint(p);
+			if (palette) {
+				palette.mousemove(p);
+			}
 		}
+	});
+
+	canvas.addEventListener('mouseout', e => {
+		palette.mouseout();
 	});
 
 	canvas.addEventListener('click', e => {
@@ -1123,7 +1518,10 @@ window.addEventListener('load', e => {
 		const ctx = canvas.getContext('2d');
 		ctx.clearRect(0, 0, canvas.width, canvas.height);
 		grid.draw();
-		palette.draw(ctx);
+		hud.draw(ctx);
+		if (palette) {
+			palette.draw(ctx);
+		}
 		minimap.draw(ctx);
 	}
 
